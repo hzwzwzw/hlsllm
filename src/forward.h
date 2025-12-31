@@ -29,14 +29,14 @@ void quantize(QuantizedTensor<S> *qx, float x[S], int GS)
     main_loop:
     for (int group = 0; group < num_groups; group++)
     {
-        #pragma HLS PIPELINE II=1 
         float wmax = 0.0;
         int base_idx = group * GS;
 
         // 第一步：找最大值（计算 Scale）
         max_loop:
         for (int i = 0; i < GS; i++) {
-            #pragma HLS PIPELINE II=1
+            #pragma HLS PIPELINE
+            #pragma HLS UNROLL factor=16
             float val = fabs(x[base_idx + i]);
             if (val > wmax) wmax = val;
         }
@@ -48,7 +48,8 @@ void quantize(QuantizedTensor<S> *qx, float x[S], int GS)
         // 这样就不需要本地的 quantized_buffer 了
         quant_write_loop:
         for (int i = 0; i < GS; i++) {
-            #pragma HLS PIPELINE II=1
+            #pragma HLS PIPELINE
+            #pragma HLS UNROLL factor=16
             float quant_value = x[base_idx + i] * inv_scale;
             int8_t q_val = (int8_t)round(quant_value);
             qx->q[base_idx + i] = q_val; // 直接写出

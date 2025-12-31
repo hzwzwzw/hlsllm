@@ -18,9 +18,9 @@ void rmsnorm(float o[S], float x[S], float weight[S])
   float x_buff[S];
   float weight_buff[S];
   float out_buff[S];
-#pragma HLS array_partition variable = x_buff type = cyclic factor = 64
-#pragma HLS array_partition variable = weight_buff type = cyclic factor = 32
-#pragma HLS array_partition variable = out_buff type = cyclic factor = 32
+#pragma HLS array_partition variable = x_buff type = cyclic factor = 16
+#pragma HLS array_partition variable = weight_buff type = cyclic factor = 16
+#pragma HLS array_partition variable = out_buff type = cyclic factor = 16
   std::memcpy(x_buff, x, array_size);
   std::memcpy(weight_buff, weight, array_size);
 
@@ -28,7 +28,7 @@ sum_of_squares:
   for (int j = 0; j < S; j++)
   {
 #pragma HLS PIPELINE
-#pragma HLS UNROLL factor = 64 skip_exit_check
+#pragma HLS UNROLL factor = 16 skip_exit_check
     float x_j = x_buff[j];
     ss += x_j * x_j;
   }
@@ -40,7 +40,7 @@ norm_and_scale:
   for (int j = 0; j < S; j++)
   {
 #pragma HLS PIPELINE
-#pragma HLS UNROLL factor = 32
+#pragma HLS UNROLL factor = 16
     float weight_j = weight_buff[j];
     float x_j = x_buff[j];
     out_buff[j] = weight_j * (ss * x_j);
@@ -113,7 +113,7 @@ void matmul(float *xout, int8_t *xq, float *xs, int8_t *wq, float *ws)
   static float xs_buffer[N / GS];
   // float out_buffer[D];
 
-#pragma HLS ARRAY_PARTITION variable = x_buffer type = cyclic factor = 64
+#pragma HLS ARRAY_PARTITION variable = x_buffer type = cyclic factor = 16
 #pragma HLS ARRAY_PARTITION variable = xs_buffer type = cyclic factor = 4
 //
 x_buff:
@@ -135,7 +135,7 @@ xs_buff:
     float val = 0.0f;
     int8_t w_buffer[N];
     float ws_buffer[N / GS];
-#pragma HLS ARRAY_PARTITION variable = w_buffer type = cyclic factor = 64
+#pragma HLS ARRAY_PARTITION variable = w_buffer type = cyclic factor = 16
 #pragma HLS ARRAY_PARTITION variable = ws_buffer type = cyclic factor = 4
     // start index of row i
     const int in = i * N;
@@ -164,7 +164,7 @@ xs_buff:
     matmul4:
       for (int k = 0; k < GS; k++)
       {
-        #pragma HLS UNROLL
+        #pragma HLS UNROLL factor = 16
         ival += ((int32_t)x_buffer[j + k]) * ((int32_t)w_buffer[j + k]);
       }
       val += ((float)ival) * ws_buffer[j / GS] * xs_buffer[j / GS];
@@ -175,10 +175,10 @@ xs_buff:
 
 extern "C" void forward(Transformer<dim, hidden_dim, n_layers, n_heads, n_kv_heads, vocab_size, seq_len, GS> *transformer, int token, int pos, float key_cache[n_layers * seq_len * ((dim * n_kv_heads) / n_heads)], float value_cache[n_layers * seq_len * ((dim * n_kv_heads) / n_heads)], float *out)
 {
-#pragma HLS INTERFACE m_axi port = transformer offset = slave bundle = gmem0
-#pragma HLS INTERFACE m_axi port = out offset = slave bundle = gmem1
-#pragma HLS INTERFACE m_axi port = key_cache offset = slave bundle = gmem2
-#pragma HLS INTERFACE m_axi port = value_cache offset = slave bundle = gmem3
+#pragma HLS INTERFACE m_axi port = transformer offset = slave bundle = gmem0 depth = 1
+#pragma HLS INTERFACE m_axi port = out offset = slave bundle = gmem1 depth = 32000
+#pragma HLS INTERFACE m_axi port = key_cache offset = slave bundle = gmem2 depth = 768000
+#pragma HLS INTERFACE m_axi port = value_cache offset = slave bundle = gmem3 depth = 768000
 
   // a few convenience variables
   auto w = &transformer->weights;
@@ -347,7 +347,7 @@ main_forward_loop:
   residual:
     for (int i = 0; i < dim; i++)
     {
-#pragma HLS UNROLL factor = 64 skip_exit_check
+#pragma HLS UNROLL factor = 16 skip_exit_check
       x[i] += xb2[i];
     }
 

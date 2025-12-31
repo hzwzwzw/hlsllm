@@ -53,11 +53,12 @@ void softmax(float *x, int size)
 {
   // find max value (for numerical stability)
   float buffer[MAXSIZE];
+#pragma HLS ARRAY_PARTITION variable = buffer type = cyclic factor = 16
   float max_val = x[0];
 max:
   for (int i = 1; i < size; i++)
   {
-#pragma HLS loop_tripcount min = 0 max = 257 avg = 129
+#pragma HLS loop_tripcount min = 0 max = 1024
 #pragma HLS PIPELINE
     float x_i = x[i];
     if (x_i > max_val)
@@ -70,7 +71,7 @@ max:
 exp:
   for (int i = 0; i < size; i++)
   {
-#pragma HLS loop_tripcount min = 0 max = 257 avg = 129
+#pragma HLS loop_tripcount min = 0 max = 1024
 #pragma HLS PIPELINE
 #pragma HLS UNROLL factor = 16
     float x_i = expf(x[i] - max_val);
@@ -80,7 +81,7 @@ exp:
 sum:
   for (int i = 0; i < size; i++)
   {
-#pragma HLS loop_tripcount min = 0 max = 257 avg = 129
+#pragma HLS loop_tripcount min = 0 max = 1024
     sum += buffer[i];
   }
   // normalize
@@ -88,7 +89,7 @@ sum:
 norm:
   for (int i = 0; i < size; i++)
   {
-#pragma HLS loop_tripcount min = 0 max = 257 avg = 129
+#pragma HLS loop_tripcount min = 0 max = 1024
 #pragma HLS PIPELINE
 #pragma HLS UNROLL factor = 16
     x[i] = buffer[i] * inv_sum;
@@ -112,37 +113,36 @@ void matmul(float *xout, int8_t *xq, float *xs, int8_t *wq, float *ws)
   static float xs_buffer[N / GS];
   // float out_buffer[D];
 
-#pragma HLS ARRAY_PARTITION variable = x_buffer type = cyclic factor = 8
+#pragma HLS ARRAY_PARTITION variable = x_buffer type = cyclic factor = 64
 #pragma HLS ARRAY_PARTITION variable = xs_buffer type = cyclic factor = 4
 //
 x_buff:
   for (int i = 0; i < N; i++)
   {
-#pragma HLS UNROLL factor = 8
+#pragma HLS PIPELINE
     x_buffer[i] = xq[i];
   }
 xs_buff:
   for (int j = 0; j <= N - GS; j += GS)
   {
-#pragma HLS UNROLL factor = 4
+#pragma HLS PIPELINE
     xs_buffer[j / GS] = xs[j / GS];
   }
 
   int i;
   for (i = 0; i < D; i++)
   {
-// #pragma HLS PIPELINE
     float val = 0.0f;
     int8_t w_buffer[N];
     float ws_buffer[N / GS];
-#pragma HLS ARRAY_PARTITION variable = w_buffer type = cyclic factor = 4
+#pragma HLS ARRAY_PARTITION variable = w_buffer type = cyclic factor = 64
 #pragma HLS ARRAY_PARTITION variable = ws_buffer type = cyclic factor = 4
     // start index of row i
     const int in = i * N;
   matmul1:
     for (int j = 0; j < N; j++)
     {
-      #pragma HLS UNROLL factor
+      #pragma HLS PIPELINE
       w_buffer[j] = wq[j + in];
     }
   matmul2:
@@ -150,7 +150,7 @@ xs_buff:
     const int groups = N / GS;
     for (int j = 0; j < groups; j++)
     {
-      #pragma HLS UNROLL factor
+      #pragma HLS PIPELINE
       ws_buffer[j] = ws[in_s + j];
     }
 
@@ -159,7 +159,7 @@ xs_buff:
   matmul3:
     for (j = 0; j <= N - GS; j += GS)
     {
-      #pragma HLS UNROLL
+      #pragma HLS PIPELINE
       int32_t ival = 0;
     matmul4:
       for (int k = 0; k < GS; k++)
@@ -233,7 +233,7 @@ main_forward_loop:
     // Rotation for both query and key vectors (i < kv_dim)
     for (int i = 0; i < kv_dim; i += 2)
     {
-#pragma HLS UNROLL factor = UNROLL_FACTOR
+#pragma HLS UNROLL factor = 8
 #pragma HLS PIPELINE
       int head_dim = i % head_size;
       float freq = 1.0f / powf(10000.0f, head_dim / (float)head_size);
@@ -257,6 +257,7 @@ main_forward_loop:
     // Rotation for only the query vector (i >= kv_dim)
     for (int i = kv_dim; i < dim; i += 2)
     {
+#pragma HLS UNROLL factor = 8
 #pragma HLS PIPELINE
       int head_dim = i % head_size;
       float freq = 1.0f / powf(10000.0f, head_dim / (float)head_size);
@@ -295,7 +296,7 @@ main_forward_loop:
       for (int t = 0; t <= pos; t++)
       {
 #pragma HLS PIPELINE
-#pragma HLS loop_tripcount min = 0 max = 257 avg = 129
+#pragma HLS loop_tripcount min = 0 max = 1000 avg = 129
         // get the key vector for this head and at this timestep
         // float *k_t = s->key_cache + loff + t * kv_dim + (h / kv_mul) * head_size;
         const int key_offset = loff + t * kv_dim + (h / kv_mul) * head_size;
@@ -312,7 +313,7 @@ main_forward_loop:
       }
 
       // softmax the scores to get attention weights, from 0..pos inclusively
-      softmax<257>(att + att_offset, pos + 1);
+      softmax<1024>(att + att_offset, pos + 1);
 
       // weighted sum of the values, store back into xb
       // float *xb_t = xb + h * head_size;
@@ -321,7 +322,7 @@ main_forward_loop:
     acc:
       for (int t = 0; t <= pos; t++)
       {
-#pragma HLS loop_tripcount min = 0 max = 257 avg = 129
+#pragma HLS loop_tripcount min = 0 max = 1000 avg = 129
 #pragma HLS PIPELINE
         // get the value vector for this head and at this timestep
         // float *v_t = s->value_cache + loff + t * kv_dim + (h / kv_mul) * head_size;

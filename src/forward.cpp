@@ -1,6 +1,7 @@
 #include "forward.h"
 #include "config.h"
 #include <cstring>
+#include "ap_int.h"
 
 // TODO: include HLS math package
 
@@ -113,13 +114,14 @@ void matmul(float *xout, int8_t *xq, float *xs, int8_t *wq, float *ws)
   static float xs_buffer[N / GS];
   // float out_buffer[D];
 
-#pragma HLS ARRAY_PARTITION variable = x_buffer type = cyclic factor = 16
+#pragma HLS ARRAY_PARTITION variable = x_buffer type = cyclic factor = 64
 #pragma HLS ARRAY_PARTITION variable = xs_buffer type = cyclic factor = 4
 //
 x_buff:
   for (int i = 0; i < N; i++)
   {
 #pragma HLS PIPELINE
+#pragma HLS UNROLL factor = 64
     x_buffer[i] = xq[i];
   }
 xs_buff:
@@ -135,22 +137,27 @@ xs_buff:
     float val = 0.0f;
     int8_t w_buffer[N];
     float ws_buffer[N / GS];
-#pragma HLS ARRAY_PARTITION variable = w_buffer type = cyclic factor = 16
+#pragma HLS ARRAY_PARTITION variable = w_buffer type = cyclic factor = 64
 #pragma HLS ARRAY_PARTITION variable = ws_buffer type = cyclic factor = 4
     // start index of row i
     const int in = i * N;
   matmul1:
-    for (int j = 0; j < N; j++)
+    for (int j = 0; j < N; j += 64)
     {
-      #pragma HLS PIPELINE
-      w_buffer[j] = wq[j + in];
+#pragma HLS PIPELINE
+      ap_uint<512> tmp_w = reinterpret_cast<ap_uint<512> *>(wq + in)[j / 64];
+      for (int k = 0; k < 64; k++)
+      {
+#pragma HLS UNROLL
+        w_buffer[j + k] = tmp_w.range(k * 8 + 7, k * 8);
+      }
     }
   matmul2:
     const int in_s = i * N / GS;
     const int groups = N / GS;
     for (int j = 0; j < groups; j++)
     {
-      #pragma HLS PIPELINE
+#pragma HLS PIPELINE
       ws_buffer[j] = ws[in_s + j];
     }
 
@@ -164,7 +171,7 @@ xs_buff:
     matmul4:
       for (int k = 0; k < GS; k++)
       {
-        #pragma HLS UNROLL factor = 16
+        #pragma HLS UNROLL factor = 64
         ival += ((int32_t)x_buffer[j + k]) * ((int32_t)w_buffer[j + k]);
       }
       val += ((float)ival) * ws_buffer[j / GS] * xs_buffer[j / GS];
@@ -182,7 +189,8 @@ extern "C" void forward(Transformer<dim, hidden_dim, n_layers, n_heads, n_kv_hea
 
   // a few convenience variables
   auto w = &transformer->weights;
-  constexpr int UNROLL_FACTOR = 16;
+  constexpr int UNROLL_FACTOR = 64;
+  static_assert(dim / config.n_heads == 64, "freq_table is precomputed for head_size=64");
   static float x[config.dim];                                        // activation at current time stamp (dim,)
   static float xb[config.dim];                                       // same, but inside a residual branch (dim,)
   static float xb2[config.dim];                                      // an additional buffer just for convenience (dim,)
@@ -194,19 +202,19 @@ extern "C" void forward(Transformer<dim, hidden_dim, n_layers, n_heads, n_kv_hea
   static float k[(config.dim * config.n_kv_heads) / config.n_heads]; // key (dim,)
   static float v[(config.dim * config.n_kv_heads) / config.n_heads]; // value (dim,)
   static float att[config.n_heads * config.seq_len];                 // buffer for scores/attention values (n_heads, seq_len)
-#pragma HLS ARRAY_PARTITION variable = q cyclic factor = UNROLL_FACTOR
-#pragma HLS ARRAY_PARTITION variable = k cyclic factor = UNROLL_FACTOR
-#pragma HLS ARRAY_PARTITION variable = v cyclic factor = UNROLL_FACTOR
-#pragma HLS ARRAY_PARTITION variable = att cyclic factor = UNROLL_FACTOR
+#pragma HLS ARRAY_PARTITION variable = q cyclic factor = 16
+#pragma HLS ARRAY_PARTITION variable = k cyclic factor = 16
+#pragma HLS ARRAY_PARTITION variable = v cyclic factor = 16
+#pragma HLS ARRAY_PARTITION variable = att cyclic factor = 16
 #pragma HLS ARRAY_PARTITION variable = hq.q cyclic factor = UNROLL_FACTOR
-#pragma HLS ARRAY_PARTITION variable = hq.s cyclic factor = UNROLL_FACTOR
+#pragma HLS ARRAY_PARTITION variable = hq.s cyclic factor = 16
 #pragma HLS ARRAY_PARTITION variable = xq.q cyclic factor = UNROLL_FACTOR
-#pragma HLS ARRAY_PARTITION variable = xq.s cyclic factor = UNROLL_FACTOR
-#pragma HLS ARRAY_PARTITION variable = hb type = cyclic factor = UNROLL_FACTOR
-#pragma HLS ARRAY_PARTITION variable = hb2 type = cyclic factor = UNROLL_FACTOR
-#pragma HLS ARRAY_PARTITION variable = x type = cyclic factor = UNROLL_FACTOR
-#pragma HLS ARRAY_PARTITION variable = xb type = cyclic factor = UNROLL_FACTOR
-#pragma HLS ARRAY_PARTITION variable = xb2 type = cyclic factor = UNROLL_FACTOR
+#pragma HLS ARRAY_PARTITION variable = xq.s cyclic factor = 16
+#pragma HLS ARRAY_PARTITION variable = hb type = cyclic factor = 16
+#pragma HLS ARRAY_PARTITION variable = hb2 type = cyclic factor = 16
+#pragma HLS ARRAY_PARTITION variable = x type = cyclic factor = 16
+#pragma HLS ARRAY_PARTITION variable = xb type = cyclic factor = 16
+#pragma HLS ARRAY_PARTITION variable = xb2 type = cyclic factor = 16
   constexpr int kv_dim = (config.dim * config.n_kv_heads) / config.n_heads;
   constexpr int kv_mul = config.n_heads / config.n_kv_heads; // integer multiplier of the kv sharing in multiquery
   constexpr int head_size = dim / config.n_heads;
@@ -227,8 +235,17 @@ main_forward_loop:
     matmul<dim, kv_dim>(k, xq.q, xq.s, (w->wk + l)->q, (w->wk + l)->s);
     matmul<dim, kv_dim>(v, xq.q, xq.s, (w->wv + l)->q, (w->wv + l)->s);
 
-  // RoPE relative positional encoding: complex-valued rotate q and k in each head
-  // Process the portion where both query and key vectors are involved (i < kv_dim)
+  // Precomputed frequency table for RoPE to avoid expensive powf calls
+    // freq[j] = 1.0 / pow(10000.0, (2*j)/head_size) where head_size=64
+    static const float freq_table[] = {
+        1.00000000f, 0.74989421f, 0.56234133f, 0.42169650f, 0.31622777f, 0.23713737f, 0.17782794f, 0.13335214f,
+        0.10000000f, 0.07498942f, 0.05623413f, 0.04216965f, 0.03162278f, 0.02371374f, 0.01778279f, 0.01333521f,
+        0.01000000f, 0.00749894f, 0.00562341f, 0.00421697f, 0.00316228f, 0.00237137f, 0.00177828f, 0.00133352f,
+        0.00100000f, 0.00074989f, 0.00056234f, 0.00042170f, 0.00031623f, 0.00023714f, 0.00017783f, 0.00013335f};
+    #pragma HLS bind_storage variable = freq_table type = rom_1p impl = lutram
+
+    // RoPE relative positional encoding: complex-valued rotate q and k in each head
+    // Process the portion where both query and key vectors are involved (i < kv_dim)
   rotation1:
     // Rotation for both query and key vectors (i < kv_dim)
     for (int i = 0; i < kv_dim; i += 2)
@@ -236,7 +253,7 @@ main_forward_loop:
 #pragma HLS UNROLL factor = 8
 #pragma HLS PIPELINE
       int head_dim = i % head_size;
-      float freq = 1.0f / powf(10000.0f, head_dim / (float)head_size);
+      float freq = freq_table[head_dim >> 1];
       float val = pos * freq;
       float fcr = cosf(val);
       float fci = sinf(val);
@@ -260,7 +277,7 @@ main_forward_loop:
 #pragma HLS UNROLL factor = 8
 #pragma HLS PIPELINE
       int head_dim = i % head_size;
-      float freq = 1.0f / powf(10000.0f, head_dim / (float)head_size);
+      float freq = freq_table[head_dim >> 1];
       float val = pos * freq;
       float fcr = cosf(val);
       float fci = sinf(val);

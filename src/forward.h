@@ -15,15 +15,9 @@ void dequantize(QuantizedTensor<S> *qx, float x[S], int GS)
 template <int S>
 void quantize(QuantizedTensor<S> *qx, float x[S], int GS)
 {
-    #pragma HLS INLINE off
     constexpr int num_groups = S / 64;
     constexpr float Q_MAX = 127.0f;
 
-    // 1. 将临时缓冲区强制绑定为 BRAM，且不需要过度拆分
-    float scale_buffer[num_groups];
-    #pragma HLS bind_storage variable=scale_buffer type=RAM_T2P impl=BRAM
-
-    // 2. 移除那个巨大的 quantized_buffer[S] 的 partition/reshape
     // 我们直接计算并写出到 AXI 接口，不留在本地做缓冲
 
     main_loop:

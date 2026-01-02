@@ -11,6 +11,48 @@
 #ifndef TYPEDEFS
 #define TYPEDEFS
 
+#ifdef __SYNTHESIS__
+#include "ap_int.h"
+#else
+#include <stdint.h>
+#include <string.h>
+
+// Simple mock for ap_uint to support x86 compilation
+template<int W>
+struct ap_uint {
+    uint8_t data[(W + 7) / 8];
+    ap_uint() { memset(data, 0, sizeof(data)); }
+    ap_uint(uint64_t val) {
+        memset(data, 0, sizeof(data));
+        memcpy(data, &val, (W + 7) / 8 < 8 ? (W + 7) / 8 : 8);
+    }
+    
+    // Range proxy to simulate .range(high, low)
+    struct RangeProxy {
+        uint8_t val;
+        operator uint8_t() const { return val; }
+        operator int8_t() const { return (int8_t)val; }
+        operator uint32_t() const { return (uint32_t)val; }
+        operator int32_t() const { return (int32_t)val; }
+    };
+
+    RangeProxy range(int high, int low) const {
+        // Simple implementation assuming byte alignment for current project usage
+        return { data[low / 8] };
+    }
+};
+
+template<int W>
+struct ap_int {
+    int8_t data[(W + 7) / 8];
+    ap_int() { memset(data, 0, sizeof(data)); }
+    ap_int(int64_t val) {
+        memset(data, 0, sizeof(data));
+        memcpy(data, &val, (W + 7) / 8 < 8 ? (W + 7) / 8 : 8);
+    }
+};
+#endif
+
 // typedef bool bit;
 // typedef ap_int<8> bit8_t;
 // typedef ap_int<16> bit16_t;

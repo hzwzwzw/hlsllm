@@ -1,7 +1,6 @@
 #include "forward.h"
 #include "config.h"
 #include <cstring>
-#include "ap_int.h"
 
 // TODO: include HLS math package
 

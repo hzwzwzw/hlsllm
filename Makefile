@@ -17,7 +17,7 @@ GCC := g++
 all: $(XCLBIN) $(HOST_EXE)
 
 # 1. 调用 Vitis HLS 生成 .xo 文件
-$(KERNEL_XO): src/forward.cpp src/forward.h
+$(KERNEL_XO): src/forward.cpp src/forward.h src/config.h src/typedefs.h
 	vitis_hls -f run_hls.tcl
 
 # 2. 调用 v++ 链接生成 .xclbin 文件

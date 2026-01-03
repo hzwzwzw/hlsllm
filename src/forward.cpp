@@ -140,11 +140,22 @@ xs_buff:
 #pragma HLS ARRAY_PARTITION variable = ws_buffer type = cyclic factor = 4
     // start index of row i
     const int in = i * N;
+
+    // Optimization: Vectorized load of weights
+    // Load 32 bytes (256 bits) at a time to match AXI bandwidth
+    ap_uint<256>* wq_vec = (ap_uint<256>*)(wq + in);
+
   matmul1:
-    for (int j = 0; j < N; j++)
+    for (int j = 0; j < N / 32; j++)
     {
       #pragma HLS PIPELINE
-      w_buffer[j] = wq[j + in];
+      ap_uint<256> tmp = wq_vec[j];
+      
+      // Unpack 32 bytes into w_buffer
+      for (int k = 0; k < 32; k++) {
+         #pragma HLS UNROLL
+         w_buffer[j*32 + k] = tmp.range(k*8+7, k*8);
+      }
     }
   matmul2:
     const int in_s = i * N / GS;

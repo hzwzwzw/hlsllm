@@ -111,13 +111,11 @@ void matmul(float *xout, int8_t *xq, float *xs, int8_t *wq, float *ws)
 
   static int8_t x_buffer[N];
   static float xs_buffer[N / GS];
-  static float ws_buffer[N / GS];
+  // float out_buffer[D];
 
 #pragma HLS ARRAY_PARTITION variable = x_buffer type = cyclic factor = 64
 #pragma HLS ARRAY_PARTITION variable = xs_buffer type = cyclic factor = 4
-#pragma HLS ARRAY_PARTITION variable = ws_buffer type = cyclic factor = 4
-
-// Pre-load x and xs (reused for all rows)
+//
 x_buff:
   for (int i = 0; i < N; i++)
   {
@@ -132,17 +130,9 @@ xs_buff:
     xs_buffer[j / GS] = xs[j / GS];
   }
 
-  // Iterate over each row of the output
-  for (int i = 0; i < D; i++)
+  int i;
+  for (i = 0; i < D; i++)
   {
-<<<<<<< HEAD
-    const int in_start = i * N;
-    const int ws_start = i * (N / GS);
-
-    // Pre-load ws for this row
-  ws_buff:
-    for (int j = 0; j < N / GS; j++)
-=======
     float val = 0.0f;
     int8_t w_buffer[N];
     float ws_buffer[N / GS];
@@ -171,59 +161,25 @@ xs_buff:
     const int in_s = i * N / GS;
     const int groups = N / GS;
     for (int j = 0; j < groups; j++)
->>>>>>> e897734 (fix ap_uint256)
     {
 #pragma HLS PIPELINE
-      ws_buffer[j] = ws[ws_start + j];
+      ws_buffer[j] = ws[in_s + j];
     }
-    
-    // Cast weight pointer for vectorized access (512-bit / 64-byte)
-    // Matches GS=64, so we load one full group per cycle
-    ap_uint<512>* wq_vec = (ap_uint<512>*)(wq + in_start);
 
-    // Accumulator expansion to break FP add dependency
-    float fp_acc[8];
-#pragma HLS ARRAY_PARTITION variable = fp_acc type = complete
-    for(int k=0; k<8; k++) fp_acc[k] = 0.0f;
-
-    // Stream-process the row: Load 64 weights -> Compute 64 MACs
-    // Loop iterates N/64 times.
-  matmul_compute:
-    for (int j = 0; j < N / 64; j++)
+    // do the matmul in groups of GS
+    int j;
+  matmul3:
+    for (j = 0; j <= N - GS; j += GS)
     {
-#pragma HLS PIPELINE II=1
-      
-      // 1. Load Weights (Streaming 64 bytes)
-      ap_uint<512> w_chunk = wq_vec[j];
-
-      // 2. Compute 64 MACs
-      int32_t partial_acc = 0;
-      
-      // Unpack and MAC
-      for (int k = 0; k < 64; k++)
+      #pragma HLS PIPELINE
+      int32_t ival = 0;
+    matmul4:
+      for (int k = 0; k < GS; k++)
       {
-#pragma HLS UNROLL
-        // Extract 8-bit weight
-        int8_t w_val = w_chunk.range(k*8+7, k*8);
-        
-        // Load x (random access into partitioned array)
-        int8_t x_val = x_buffer[j * 64 + k];
-        
-        partial_acc += ((int32_t)x_val) * ((int32_t)w_val);
+        #pragma HLS UNROLL factor = 64
+        ival += ((int32_t)x_buffer[j + k]) * ((int32_t)w_buffer[j + k]);
       }
-
-      // 3. Apply Scaling and Accumulate
-      // We process exactly one group (index j) per iteration
-      float scale = ws_buffer[j] * xs_buffer[j];
-      
-      fp_acc[j % 8] += ((float)partial_acc) * scale;
-    }
-
-    // Sum up accumulators
-    float val = 0.0f;
-    for (int k = 0; k < 8; k++) {
-#pragma HLS UNROLL
-        val += fp_acc[k];
+      val += ((float)ival) * ws_buffer[j / GS] * xs_buffer[j / GS];
     }
     xout[i] = val;
   }

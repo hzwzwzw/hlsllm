@@ -29,16 +29,24 @@ struct ap_uint {
     
     // Range proxy to simulate .range(high, low)
     struct RangeProxy {
-        uint8_t val;
-        operator uint8_t() const { return val; }
-        operator int8_t() const { return (int8_t)val; }
-        operator uint32_t() const { return (uint32_t)val; }
-        operator int32_t() const { return (int32_t)val; }
+        const uint8_t* data_ptr;
+        int low_bit;
+        operator uint8_t() const { return data_ptr[low_bit / 8]; }
+        operator int8_t() const { return (int8_t)data_ptr[low_bit / 8]; }
+        operator uint32_t() const { 
+            uint32_t val;
+            memcpy(&val, data_ptr + low_bit / 8, 4);
+            return val;
+        }
+        operator int32_t() const { 
+            int32_t val;
+            memcpy(&val, data_ptr + low_bit / 8, 4);
+            return val;
+        }
     };
 
     RangeProxy range(int high, int low) const {
-        // Simple implementation assuming byte alignment for current project usage
-        return { data[low / 8] };
+        return { data, low };
     }
 };
 

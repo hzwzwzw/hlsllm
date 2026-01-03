@@ -11,7 +11,7 @@ add_files src/config.h
 # 设置解决方案和 U280 芯片型号
 open_solution -reset "solution1" -flow_target vitis
 set_part xcu280-fsvh2892-2L-e
-create_clock -period 4.00 -name default
+create_clock -period 2.50 -name default
 
 # 运行综合并导出 XO
 csynth_design

@@ -24,7 +24,7 @@ $(KERNEL_XO): src/forward.cpp src/forward.h src/config.h src/typedefs.h
 $(XCLBIN): $(KERNEL_XO)
 	mkdir -p $(BUILD_DIR)
 	$(VPP) -t $(TARGET) --platform $(PLATFORM) --link $(KERNEL_XO) \
-		--config link.cfg --kernel_frequency 250 \
+		--config link.cfg --kernel_frequency 400 \
 		-o $(XCLBIN) --temp_dir $(TEMP_DIR) --vivado.synth.jobs 16 --vivado.impl.jobs 16
 
 # 3. 编译主机端程序 (需要安装 XRT)

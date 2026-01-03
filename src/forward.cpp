@@ -141,15 +141,10 @@ xs_buff:
     // start index of row i
     const int in = i * N;
   matmul1:
-    for (int j = 0; j < N; j += 64)
+    for (int j = 0; j < N; j++)
     {
-#pragma HLS PIPELINE
-      ap_uint<512> tmp_w = reinterpret_cast<ap_uint<512> *>(wq + in)[j / 64];
-      for (int k = 0; k < 64; k++)
-      {
-#pragma HLS UNROLL
-        w_buffer[j + k] = tmp_w.range(k * 8 + 7, k * 8);
-      }
+      #pragma HLS PIPELINE
+      w_buffer[j] = wq[j + in];
     }
   matmul2:
     const int in_s = i * N / GS;

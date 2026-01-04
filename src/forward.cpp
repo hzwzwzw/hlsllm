@@ -96,7 +96,6 @@ norm:
   }
 }
 
-
 template <int N, int D>
 void matmul(float *xout, int8_t *xq, float *xs, int8_t *wq, float *ws)
 {
@@ -118,16 +117,11 @@ void matmul(float *xout, int8_t *xq, float *xs, int8_t *wq, float *ws)
 #pragma HLS ARRAY_PARTITION variable = xs_buffer type = cyclic factor = 4
 //
 x_buff:
+  for (int i = 0; i < N; i++)
   {
-    for (int j = 0; j < N / 64; j++)
-    {
 #pragma HLS PIPELINE
-      for (int k = 0; k < 64; k++)
-      {
-#pragma HLS UNROLL
-        x_buffer[j * 64 + k] = xq[j * 64 + k];
-      }
-    }
+#pragma HLS UNROLL factor = 64
+    x_buffer[i] = xq[i];
   }
 xs_buff:
   for (int j = 0; j <= N - GS; j += GS)
@@ -148,19 +142,19 @@ xs_buff:
     const int in = i * N;
 
     // Optimization: Vectorized load of weights
-    // Load 64 bytes (512 bits) at a time to match AXI bandwidth
-    ap_uint<512>* wq_vec = (ap_uint<512>*)(wq + in);
+    // Load 32 bytes (256 bits) at a time to match AXI bandwidth
+    ap_uint<256>* wq_vec = (ap_uint<256>*)(wq + in);
 
   matmul1:
-    for (int j = 0; j < N / 64; j++)
+    for (int j = 0; j < N / 32; j++)
     {
       #pragma HLS PIPELINE
-      ap_uint<512> tmp = wq_vec[j];
+      ap_uint<256> tmp = wq_vec[j];
       
-      // Unpack 64 bytes into w_buffer
-      for (int k = 0; k < 64; k++) {
+      // Unpack 32 bytes into w_buffer
+      for (int k = 0; k < 32; k++) {
          #pragma HLS UNROLL
-         w_buffer[j*64 + k] = tmp.range(k*8+7, k*8);
+         w_buffer[j*32 + k] = tmp.range(k*8+7, k*8);
       }
     }
   matmul2:
@@ -231,18 +225,7 @@ extern "C" void forward(Transformer<dim, hidden_dim, n_layers, n_heads, n_kv_hea
   constexpr int head_size = dim / config.n_heads;
 
   // copy the token embedding into x
-  {
-    ap_uint<512>* token_emb_vec = (ap_uint<512>*)(w->token_embedding_table + token * dim);
-    for (int i = 0; i < dim / 16; i++) {
-      #pragma HLS PIPELINE
-      ap_uint<512> tmp = token_emb_vec[i];
-      for (int k = 0; k < 16; k++) {
-        #pragma HLS UNROLL
-        uint32_t val = tmp.range(k*32+31, k*32);
-        x[i*16 + k] = *(float*)&val;
-      }
-    }
-  }
+  std::memcpy(x, w->token_embedding_table + token * dim, dim * sizeof(float));
 
 // forward all the layers
 main_forward_loop:
@@ -315,23 +298,8 @@ main_forward_loop:
     float *key_cache_row = key_cache + loff + pos * kv_dim;
     float *value_cache_row = value_cache + loff + pos * kv_dim;
 
-    {
-      ap_uint<512>* key_cache_vec = (ap_uint<512>*)key_cache_row;
-      ap_uint<512>* value_cache_vec = (ap_uint<512>*)value_cache_row;
-      for (int i = 0; i < kv_dim / 16; i++) {
-        #pragma HLS PIPELINE
-        ap_uint<512> k_tmp, v_tmp;
-        for (int j = 0; j < 16; j++) {
-           #pragma HLS UNROLL
-           float kval = k[i*16 + j];
-           float vval = v[i*16 + j];
-           k_tmp.range(j*32+31, j*32) = *(uint32_t*)&kval;
-           v_tmp.range(j*32+31, j*32) = *(uint32_t*)&vval;
-        }
-        key_cache_vec[i] = k_tmp;
-        value_cache_vec[i] = v_tmp;
-      }
-    }
+    std::memcpy(key_cache_row, k, kv_dim * sizeof(*key_cache_row));
+    std::memcpy(value_cache_row, v, kv_dim * sizeof(*value_cache_row));
 
     // multihead attention. iterate over all heads
     int h;
@@ -356,17 +324,10 @@ main_forward_loop:
         const int key_offset = loff + t * kv_dim + (h / kv_mul) * head_size;
         // calculate the attention score as the dot product of q and k
         float score = 0.0f;
-        ap_uint<512>* k_cache_vec = (ap_uint<512>*)(key_cache + key_offset);
-        for (int i = 0; i < head_size / 16; i++)
+        for (int i = 0; i < head_size; i++)
         {
-#pragma HLS UNROLL
-          ap_uint<512> tmp = k_cache_vec[i];
-          for (int k = 0; k < 16; k++)
-          {
-#pragma HLS UNROLL
-            uint32_t val = tmp.range(k * 32 + 31, k * 32);
-            score += q[i * 16 + k + q_offset] * (*(float *)&val);
-          }
+#pragma HLS unroll
+          score += q[i + q_offset] * key_cache[i + key_offset];
         }
         score /= sqrtf(head_size);
         // save the score to the attention buffer
@@ -392,19 +353,10 @@ main_forward_loop:
         float a = att[t + att_offset];
       // accumulate the weighted value into xb
       acc_inner:
+        for (int i = 0; i < head_size; i++)
         {
-          ap_uint<512>* v_cache_vec = (ap_uint<512>*)(value_cache + v_offset);
-          for (int i = 0; i < head_size / 16; i++)
-          {
-#pragma HLS UNROLL
-            ap_uint<512> tmp = v_cache_vec[i];
-            for (int k = 0; k < 16; k++)
-            {
-#pragma HLS UNROLL
-              uint32_t val = tmp.range(k * 32 + 31, k * 32);
-              xb[i * 16 + k + xb_offset] += a * (*(float *)&val);
-            }
-          }
+#pragma HLS unroll
+          xb[i + xb_offset] += a * value_cache[i + v_offset];
         }
       }
     }

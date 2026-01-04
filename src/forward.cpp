@@ -21,22 +21,8 @@ void rmsnorm(float o[S], float x[S], float weight[S])
 #pragma HLS array_partition variable = x_buff type = cyclic factor = 16
 #pragma HLS array_partition variable = weight_buff type = cyclic factor = 16
 #pragma HLS array_partition variable = out_buff type = cyclic factor = 16
-  
-  // Optimization: Vectorized load for floats (512-bit = 16 floats)
-  ap_uint<512>* x_vec = (ap_uint<512>*)x;
-  ap_uint<512>* weight_vec = (ap_uint<512>*)weight;
-  for (int i = 0; i < S / 16; i++) {
-    #pragma HLS PIPELINE
-    ap_uint<512> xtmp = x_vec[i];
-    ap_uint<512> wtmp = weight_vec[i];
-    for (int k = 0; k < 16; k++) {
-      #pragma HLS UNROLL
-      uint32_t xval = xtmp.range(k*32+31, k*32);
-      uint32_t wval = wtmp.range(k*32+31, k*32);
-      x_buff[i*16 + k] = *(float*)&xval;
-      weight_buff[i*16 + k] = *(float*)&wval;
-    }
-  }
+  std::memcpy(x_buff, x, array_size);
+  std::memcpy(weight_buff, weight, array_size);
 
 sum_of_squares:
   for (int j = 0; j < S; j++)
@@ -59,19 +45,7 @@ norm_and_scale:
     float x_j = x_buff[j];
     out_buff[j] = weight_j * (ss * x_j);
   }
-  
-  // Optimization: Vectorized store for floats
-  ap_uint<512>* o_vec = (ap_uint<512>*)o;
-  for (int i = 0; i < S / 16; i++) {
-    #pragma HLS PIPELINE
-    ap_uint<512> tmp;
-    for (int k = 0; k < 16; k++) {
-      #pragma HLS UNROLL
-      float val = out_buff[i*16 + k];
-      tmp.range(k*32+31, k*32) = *(uint32_t*)&val;
-    }
-    o_vec[i] = tmp;
-  }
+  std::memcpy(o, out_buff, array_size);
 }
 
 template <int MAXSIZE>
@@ -122,6 +96,7 @@ norm:
   }
 }
 
+
 template <int N, int D>
 void matmul(float *xout, int8_t *xq, float *xs, int8_t *wq, float *ws)
 {
@@ -144,15 +119,13 @@ void matmul(float *xout, int8_t *xq, float *xs, int8_t *wq, float *ws)
 //
 x_buff:
   {
-    ap_uint<512> *xq_vec = (ap_uint<512> *)xq;
     for (int j = 0; j < N / 64; j++)
     {
 #pragma HLS PIPELINE
-      ap_uint<512> tmp = xq_vec[j];
       for (int k = 0; k < 64; k++)
       {
 #pragma HLS UNROLL
-        x_buffer[j * 64 + k] = tmp.range(k * 8 + 7, k * 8);
+        x_buffer[j * 64 + k] = xq[j * 64 + k];
       }
     }
   }
@@ -260,10 +233,14 @@ extern "C" void forward(Transformer<dim, hidden_dim, n_layers, n_heads, n_kv_hea
   // copy the token embedding into x
   {
     ap_uint<512>* token_emb_vec = (ap_uint<512>*)(w->token_embedding_table + token * dim);
-    ap_uint<512>* x_vec = (ap_uint<512>*)x;
     for (int i = 0; i < dim / 16; i++) {
       #pragma HLS PIPELINE
-      x_vec[i] = token_emb_vec[i];
+      ap_uint<512> tmp = token_emb_vec[i];
+      for (int k = 0; k < 16; k++) {
+        #pragma HLS UNROLL
+        uint32_t val = tmp.range(k*32+31, k*32);
+        x[i*16 + k] = *(float*)&val;
+      }
     }
   }
 
@@ -339,14 +316,20 @@ main_forward_loop:
     float *value_cache_row = value_cache + loff + pos * kv_dim;
 
     {
-      ap_uint<512>* k_vec = (ap_uint<512>*)k;
-      ap_uint<512>* v_vec = (ap_uint<512>*)v;
       ap_uint<512>* key_cache_vec = (ap_uint<512>*)key_cache_row;
       ap_uint<512>* value_cache_vec = (ap_uint<512>*)value_cache_row;
       for (int i = 0; i < kv_dim / 16; i++) {
         #pragma HLS PIPELINE
-        key_cache_vec[i] = k_vec[i];
-        value_cache_vec[i] = v_vec[i];
+        ap_uint<512> k_tmp, v_tmp;
+        for (int j = 0; j < 16; j++) {
+           #pragma HLS UNROLL
+           float kval = k[i*16 + j];
+           float vval = v[i*16 + j];
+           k_tmp.range(j*32+31, j*32) = *(uint32_t*)&kval;
+           v_tmp.range(j*32+31, j*32) = *(uint32_t*)&vval;
+        }
+        key_cache_vec[i] = k_tmp;
+        value_cache_vec[i] = v_tmp;
       }
     }
 
